@@ -101,15 +101,25 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
             if backend == "te" and self.accelerator.fp8_backend.name == "TE":
                 try:
                     from accelerate.utils.transformer_engine import apply_fp8_autowrap
+                    from accelerate.utils import FP8RecipeKwargs
                     
-                    # Get the FP8 recipe handler from accelerator
+                    # Get or create the FP8 recipe handler
                     fp8_recipe_handler = getattr(self.accelerator, "fp8_recipe_handler", None)
-                    if fp8_recipe_handler:
-                        # Apply FP8 autocast to model's forward method
-                        self.model = apply_fp8_autowrap(self.model, fp8_recipe_handler)
-                        logger.info_rank0("✅ Applied FP8 autocast to model forward pass (required for actual FP8 computation)")
-                    else:
-                        logger.warning_rank0("⚠️  No FP8 recipe handler found - FP8 autocast not applied!")
+                    
+                    if not fp8_recipe_handler:
+                        # Accelerator doesn't have recipe handler (created without kwargs_handlers)
+                        # Create one manually based on env vars
+                        logger.info_rank0("Creating FP8RecipeKwargs manually (Accelerator missing recipe handler)")
+                        fp8_recipe_handler = FP8RecipeKwargs(
+                            backend="TE",
+                            fp8_format="HYBRID",
+                            amax_history_len=16,
+                            amax_compute_algo="max"
+                        )
+                    
+                    # Apply FP8 autocast to model's forward method
+                    self.model = apply_fp8_autowrap(self.model, fp8_recipe_handler)
+                    logger.info_rank0("✅ Applied FP8 autocast to model forward pass (required for actual FP8 computation)")
                 except Exception as e:
                     logger.warning_rank0(f"Failed to apply FP8 autocast: {e}")
 
