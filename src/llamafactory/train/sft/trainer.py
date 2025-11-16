@@ -55,29 +55,9 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
         gen_kwargs: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> None:
-        # Configure FP8 environment and create Accelerator if enabled
+        # Configure FP8 environment if enabled
         if model_args is not None and model_args.fp8:
-            from accelerate import Accelerator
-            from ..fp8_utils import create_fp8_kwargs
-            
             configure_fp8_environment(model_args)
-            
-            # Create FP8 kwargs for Accelerator
-            fp8_kwargs = create_fp8_kwargs(model_args)
-            
-            # Create Accelerator with FP8 support before Trainer initialization
-            # This ensures TE backend is used instead of defaulting to AO
-            if fp8_kwargs:
-                training_args = kwargs.get("args")
-                accelerator = Accelerator(
-                    mixed_precision="fp8",
-                    gradient_accumulation_steps=training_args.gradient_accumulation_steps if training_args else 1,
-                    kwargs_handlers=fp8_kwargs,
-                    deepspeed_plugin=training_args.deepspeed_plugin if training_args and hasattr(training_args, 'deepspeed_plugin') else None,
-                )
-                # Pass the accelerator to Trainer so it uses ours instead of creating its own
-                kwargs["accelerator"] = accelerator
-                
         if is_transformers_version_greater_than("4.46"):
             kwargs["processing_class"] = kwargs.pop("tokenizer")
         else:
