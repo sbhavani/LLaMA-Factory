@@ -116,11 +116,13 @@ def configure_fp8_environment(model_args: "ModelArguments") -> None:
     os.environ["ACCELERATE_MIXED_PRECISION"] = "fp8"
     logger.info_rank0("Set ACCELERATE_MIXED_PRECISION=fp8")
 
-    # Configure FP8 backend
+    # Configure FP8 backend - THIS IS CRITICAL!
     backend = getattr(model_args, "fp8_backend", "auto")
     if backend != "auto":
-        os.environ["FP8_BACKEND"] = backend
-        logger.info_rank0(f"Set FP8_BACKEND={backend}")
+        # Set ACCELERATE_FP8_BACKEND to force backend selection
+        # This is the key env var that makes Accelerate use TE instead of AO
+        os.environ["ACCELERATE_FP8_BACKEND"] = backend.upper()
+        logger.info_rank0(f"Set ACCELERATE_FP8_BACKEND={backend.upper()}")
 
     # Create FP8 recipe kwargs
     fp8_kwargs = create_fp8_kwargs(model_args)
