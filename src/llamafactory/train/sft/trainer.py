@@ -60,18 +60,17 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
             configure_fp8_environment(model_args)
             
             # CRITICAL FIX: Trainer doesn't pass kwargs_handlers when creating Accelerator
-            # Monkey-patch Accelerator.__init__ to inject FP8RecipeKwargs
+            # Monkey-patch Accelerator.__init__ to inject TERecipeKwargs (non-deprecated)
             from accelerate import Accelerator
-            from accelerate.utils import FP8RecipeKwargs
+            from accelerate.utils import TERecipeKwargs
             
             original_accelerator_init = Accelerator.__init__
             
             def patched_accelerator_init(self, *args, **accelerator_kwargs):
-                """Inject FP8RecipeKwargs if missing."""
+                """Inject TERecipeKwargs if missing."""
                 if 'kwargs_handlers' not in accelerator_kwargs or not accelerator_kwargs['kwargs_handlers']:
-                    logger.info_rank0("Injecting FP8RecipeKwargs into Accelerator (Trainer doesn't do this)")
-                    fp8_recipe = FP8RecipeKwargs(
-                        backend="TE",
+                    logger.info_rank0("Injecting TERecipeKwargs into Accelerator (non-deprecated version)")
+                    fp8_recipe = TERecipeKwargs(
                         fp8_format="HYBRID",
                         amax_history_len=16,
                         amax_compute_algo="max"
