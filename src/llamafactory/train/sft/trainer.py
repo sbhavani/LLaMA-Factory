@@ -112,18 +112,20 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
                         amax_compute_algo="max"
                     )
                     
-                    # Manually wrap forward method with TE's fp8_autocast
+                    # Manually wrap forward method with BOTH BF16 and FP8 autocast
+                    # FP8 must be nested inside BF16 autocast for proper TE usage
                     original_forward = self.model.forward
                     
                     def fp8_forward(self_inner, *args, **kwargs):
-                        """Forward pass with TE FP8 autocast context."""
-                        with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
-                            return original_forward(*args, **kwargs)
+                        """Forward pass with BF16 + FP8 autocast (TE requirement)."""
+                        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                            with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                                return original_forward(*args, **kwargs)
                     
                     # Replace forward method
                     self.model.forward = MethodType(fp8_forward, self.model)
-                    logger.info_rank0("✅ Applied TE fp8_autocast directly (bypassing broken Accelerate wrapper)")
-                    logger.info_rank0("   Expected: 3-4x speedup based on synthetic tests!")
+                    logger.info_rank0("✅ Applied TE fp8_autocast with BF16 wrapper (correct TE usage)")
+                    logger.info_rank0("   Expected: 1.3-1.5x speedup with FP8 matmuls + BF16 activations")
                 except Exception as e:
                     logger.warning_rank0(f"Failed to apply TE fp8_autocast: {e}")
                     import traceback
