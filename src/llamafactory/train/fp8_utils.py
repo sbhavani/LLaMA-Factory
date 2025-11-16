@@ -41,10 +41,11 @@ def create_fp8_kwargs(model_args: "ModelArguments") -> list[Any]:
     try:
         # Use Transformer Engine backend (recommended for H100/GH200)
         if backend == "te":
-            from accelerate.utils import TERecipeKwargs
+            from accelerate.utils import FP8RecipeKwargs
             
             logger.info_rank0("Using Transformer Engine FP8 backend (optimal for Hopper GPUs)")
-            return [TERecipeKwargs(
+            return [FP8RecipeKwargs(
+                backend="TE",  # Explicitly set TE backend
                 fp8_format="HYBRID",
                 amax_history_len=16,
                 amax_compute_algo="max"
