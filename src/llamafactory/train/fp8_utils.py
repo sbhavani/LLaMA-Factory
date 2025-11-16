@@ -117,18 +117,15 @@ def configure_fp8_environment(model_args: "ModelArguments") -> None:
     logger.info_rank0("Set ACCELERATE_MIXED_PRECISION=fp8")
 
     # Configure FP8 backend - THIS IS CRITICAL!
+    # Setting ACCELERATE_FP8_BACKEND env var is sufficient for Accelerate to:
+    # 1. Select the correct FP8 backend (TE, TorchAO, or MS-AMP)
+    # 2. Automatically convert nn.Linear layers to FP8 layers during prepare()
     backend = getattr(model_args, "fp8_backend", "auto")
     if backend != "auto":
-        # Set ACCELERATE_FP8_BACKEND to force backend selection
-        # This is the key env var that makes Accelerate use TE instead of AO
         os.environ["ACCELERATE_FP8_BACKEND"] = backend.upper()
         logger.info_rank0(f"Set ACCELERATE_FP8_BACKEND={backend.upper()}")
-
-    # Create FP8 recipe kwargs
-    fp8_kwargs = create_fp8_kwargs(model_args)
-    logger.info_rank0(f"FP8 recipe kwargs created: {len(fp8_kwargs)} items")
-
-    logger.info_rank0("FP8 environment configured - all FP8 training handled by HuggingFace Accelerate")
+    
+    logger.info_rank0("FP8 environment configured - Accelerate will handle FP8 training automatically")
 
 
 def verify_fp8_status(accelerator, model_args: "ModelArguments") -> None:
