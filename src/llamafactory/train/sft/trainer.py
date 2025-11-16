@@ -56,17 +56,44 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
         **kwargs,
     ) -> None:
         # Configure FP8 environment if enabled
-        # Setting ACCELERATE_FP8_BACKEND env var is sufficient for Accelerator
-        # to use TE backend and convert layers automatically
         if model_args is not None and model_args.fp8:
             configure_fp8_environment(model_args)
+            
+            # CRITICAL FIX: Trainer doesn't pass kwargs_handlers when creating Accelerator
+            # Monkey-patch Accelerator.__init__ to inject FP8RecipeKwargs
+            from accelerate import Accelerator
+            from accelerate.utils import FP8RecipeKwargs
+            
+            original_accelerator_init = Accelerator.__init__
+            
+            def patched_accelerator_init(self, *args, **accelerator_kwargs):
+                """Inject FP8RecipeKwargs if missing."""
+                if 'kwargs_handlers' not in accelerator_kwargs or not accelerator_kwargs['kwargs_handlers']:
+                    logger.info_rank0("Injecting FP8RecipeKwargs into Accelerator (Trainer doesn't do this)")
+                    fp8_recipe = FP8RecipeKwargs(
+                        backend="TE",
+                        fp8_format="HYBRID",
+                        amax_history_len=16,
+                        amax_compute_algo="max"
+                    )
+                    accelerator_kwargs['kwargs_handlers'] = [fp8_recipe]
+                return original_accelerator_init(self, *args, **accelerator_kwargs)
+            
+            # Temporarily replace __init__
+            Accelerator.__init__ = patched_accelerator_init
         
         if is_transformers_version_greater_than("4.46"):
             kwargs["processing_class"] = kwargs.pop("tokenizer")
         else:
             self.processing_class: PreTrainedTokenizer = kwargs.get("tokenizer")
 
-        super().__init__(**kwargs)
+        try:
+            super().__init__(**kwargs)
+        finally:
+            # Restore original Accelerator.__init__
+            if model_args is not None and model_args.fp8:
+                Accelerator.__init__ = original_accelerator_init
+                logger.info_rank0("✅ Accelerator created with FP8RecipeKwargs - should work like official benchmark!")
         if processor is not None:
             # avoid wrong loss under gradient accumulation
             # https://github.com/huggingface/transformers/pull/36044#issuecomment-2746657112
@@ -91,45 +118,11 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
 
             self.compute_loss_func = dft_loss_func
 
-        # Verify FP8 status and apply FP8 autocast after trainer initialization
+        # Verify FP8 status after trainer initialization
         if model_args is not None and model_args.fp8 and hasattr(self, "accelerator"):
             verify_fp8_status(self.accelerator, model_args)
-            
-            # CRITICAL FIX: Accelerate's apply_fp8_autowrap is BROKEN!
-            # Bypass it and use TE's fp8_autocast directly (proven 4x faster in tests)
-            backend = getattr(model_args, "fp8_backend", "auto")
-            if backend == "te" and self.accelerator.fp8_backend.name == "TE":
-                try:
-                    import transformer_engine.pytorch as te
-                    from transformer_engine.common import recipe
-                    from types import MethodType
-                    
-                    # Create TE recipe directly (not Accelerate's wrapper)
-                    logger.info_rank0("Creating TE DelayedScaling recipe (bypassing Accelerate)")
-                    fp8_recipe = recipe.DelayedScaling(
-                        fp8_format=recipe.Format.HYBRID,
-                        amax_history_len=16,
-                        amax_compute_algo="max"
-                    )
-                    
-                    # Manually wrap forward method with BOTH BF16 and FP8 autocast
-                    # FP8 must be nested inside BF16 autocast for proper TE usage
-                    original_forward = self.model.forward
-                    
-                    def fp8_forward(self_inner, *args, **kwargs):
-                        """Forward pass with BF16 + FP8 autocast (TE requirement)."""
-                        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                            with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
-                                return original_forward(*args, **kwargs)
-                    
-                    # Replace forward method
-                    self.model.forward = MethodType(fp8_forward, self.model)
-                    logger.info_rank0("✅ Applied TE fp8_autocast with BF16 wrapper (correct TE usage)")
-                    logger.info_rank0("   Expected: 1.3-1.5x speedup with FP8 matmuls + BF16 activations")
-                except Exception as e:
-                    logger.warning_rank0(f"Failed to apply TE fp8_autocast: {e}")
-                    import traceback
-                    logger.warning_rank0(traceback.format_exc())
+            logger.info_rank0("FP8 setup complete - Accelerate should handle everything automatically")
+            logger.info_rank0("(Following official Accelerate benchmark pattern)")
 
     @override
     def create_optimizer(self) -> "torch.optim.Optimizer":
