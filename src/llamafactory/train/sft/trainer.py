@@ -55,15 +55,42 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
         gen_kwargs: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> None:
-        # Configure FP8 environment if enabled
+        # Configure FP8 environment and inject kwargs_handlers if enabled
+        fp8_kwargs_handlers = None
         if model_args is not None and model_args.fp8:
             configure_fp8_environment(model_args)
+            # Get FP8 recipe kwargs to inject into Accelerator
+            from ..fp8_utils import create_fp8_kwargs
+            fp8_kwargs_list = create_fp8_kwargs(model_args)
+            if fp8_kwargs_list:
+                fp8_kwargs_handlers = fp8_kwargs_list
+        
+        # Monkey-patch Accelerator to inject kwargs_handlers
+        if fp8_kwargs_handlers:
+            from accelerate import Accelerator
+            original_init = Accelerator.__init__
+            
+            def patched_init(self, *args, **init_kwargs):
+                # Inject our FP8 kwargs_handlers
+                if 'kwargs_handlers' not in init_kwargs:
+                    init_kwargs['kwargs_handlers'] = []
+                init_kwargs['kwargs_handlers'].extend(fp8_kwargs_handlers)
+                logger.info_rank0(f"Injecting FP8 kwargs_handlers into Accelerator: {fp8_kwargs_handlers}")
+                return original_init(self, *args, **init_kwargs)
+            
+            Accelerator.__init__ = patched_init
+        
         if is_transformers_version_greater_than("4.46"):
             kwargs["processing_class"] = kwargs.pop("tokenizer")
         else:
             self.processing_class: PreTrainedTokenizer = kwargs.get("tokenizer")
 
-        super().__init__(**kwargs)
+        try:
+            super().__init__(**kwargs)
+        finally:
+            # Restore original Accelerator.__init__
+            if fp8_kwargs_handlers:
+                Accelerator.__init__ = original_init
         if processor is not None:
             # avoid wrong loss under gradient accumulation
             # https://github.com/huggingface/transformers/pull/36044#issuecomment-2746657112
