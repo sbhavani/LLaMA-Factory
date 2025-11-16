@@ -91,9 +91,27 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
 
             self.compute_loss_func = dft_loss_func
 
-        # Verify FP8 status after trainer initialization (accelerator should be available)
+        # Verify FP8 status and apply FP8 autocast after trainer initialization
         if model_args is not None and model_args.fp8 and hasattr(self, "accelerator"):
             verify_fp8_status(self.accelerator, model_args)
+            
+            # CRITICAL FIX: Accelerate's _prepare_te() converts layers but doesn't apply FP8 autocast!
+            # We must manually apply the FP8 autocast wrapper to enable actual FP8 computation.
+            backend = getattr(model_args, "fp8_backend", "auto")
+            if backend == "te" and self.accelerator.fp8_backend.name == "TE":
+                try:
+                    from accelerate.utils.transformer_engine import apply_fp8_autowrap
+                    
+                    # Get the FP8 recipe handler from accelerator
+                    fp8_recipe_handler = getattr(self.accelerator, "fp8_recipe_handler", None)
+                    if fp8_recipe_handler:
+                        # Apply FP8 autocast to model's forward method
+                        self.model = apply_fp8_autowrap(self.model, fp8_recipe_handler)
+                        logger.info_rank0("✅ Applied FP8 autocast to model forward pass (required for actual FP8 computation)")
+                    else:
+                        logger.warning_rank0("⚠️  No FP8 recipe handler found - FP8 autocast not applied!")
+                except Exception as e:
+                    logger.warning_rank0(f"Failed to apply FP8 autocast: {e}")
 
     @override
     def create_optimizer(self) -> "torch.optim.Optimizer":
